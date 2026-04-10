@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.zylora.dev/zylora-toml/v1.json",
+  "title": "zylora.toml",
+  "description": "Zylora project configuration file. Place at the root of your project repository.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "project": {
+      "type": "object",
+      "description": "Project-level settings",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100,
+          "description": "Project display name"
+        },
+        "org": {
+          "type": "string",
+          "description": "Organization slug (optional — omit for personal projects)"
+        }
+      }
+    },
+    "functions": {
+      "type": "object",
+      "description": "Named function definitions. Keys are function names.",
+      "additionalProperties": {
+        "$ref": "#/$defs/FunctionConfig"
+      }
+    },
+    "defaults": {
+      "$ref": "#/$defs/FunctionDefaults",
+      "description": "Default values applied to all functions unless overridden"
+    }
+  },
+  "$defs": {
+    "FunctionDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Default function configuration values",
+      "properties": {
+        "gpu_type": {
+          "$ref": "#/$defs/GpuType"
+        },
+        "runtime": {
+          "$ref": "#/$defs/Runtime"
+        },
+        "min_instances": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_instances": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "default": 300
+        },
+        "region": {
+          "type": "string",
+          "description": "Preferred GPU provider region"
+        }
+      }
+    },
+    "FunctionConfig": {
+      "type": "object",
+      "description": "Configuration for a single serverless GPU function",
+      "required": ["entry_point", "gpu_type"],
+      "additionalProperties": false,
+      "properties": {
+        "entry_point": {
+          "type": "string",
+          "description": "Python module:callable path, e.g. 'handler:run'",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_.]*:[a-zA-Z_][a-zA-Z0-9_]*$",
+          "examples": ["main:handler", "src.model:predict"]
+        },
+        "gpu_type": {
+          "$ref": "#/$defs/GpuType"
+        },
+        "gpu_count": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Number of GPUs per instance (multi-GPU future)"
+        },
+        "runtime": {
+          "$ref": "#/$defs/Runtime"
+        },
+        "python_version": {
+          "type": "string",
+          "pattern": "^3\\.1[0-9]$",
+          "description": "Python version string, e.g. '3.12'",
+          "examples": ["3.12", "3.11", "3.10"]
+        },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "pip packages to install (e.g. ['torch==2.2.0', 'transformers'])"
+        },
+        "requirements_file": {
+          "type": "string",
+          "description": "Path to a requirements.txt file",
+          "default": "requirements.txt"
+        },
+        "dockerfile": {
+          "type": "string",
+          "description": "Path to a custom Dockerfile (overrides runtime)"
+        },
+        "min_instances": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Minimum warm instances (0 = scale to zero)"
+        },
+        "max_instances": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10,
+          "description": "Maximum concurrent instances"
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Concurrent requests per instance"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "default": 300,
+          "description": "Maximum execution time before timeout"
+        },
+        "model": {
+          "type": "string",
+          "description": "Model name (must exist in your Zylora model registry)"
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "description": "Secret names to inject as environment variables (must be created via CLI or dashboard)"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Non-secret environment variables injected at runtime"
+        },
+        "visibility": {
+          "type": "string",
+          "enum": ["public", "private", "unlisted"],
+          "default": "private"
+        },
+        "schedule": {
+          "type": "string",
+          "description": "Cron expression for scheduled invocations (UTC). E.g. '0 2 * * *' = daily at 2am UTC.",
+          "examples": ["0 * * * *", "*/15 * * * *", "0 2 * * 1"]
+        },
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "default": 0,
+          "description": "Number of automatic retries on failure"
+        },
+        "webhook_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "POST result to this URL on async invocation completion"
+        }
+      }
+    },
+    "GpuType": {
+      "type": "string",
+      "enum": [
+        "t4",
+        "l4",
+        "rtx4090",
+        "a100_40gb",
+        "a100_80gb",
+        "l40s",
+        "h100",
+        "h200",
+        "b200",
+        "mi300x"
+      ],
+      "description": "GPU instance type. See https://zylora.dev/docs/gpu-types for pricing."
+    },
+    "Runtime": {
+      "type": "string",
+      "enum": [
+        "python310",
+        "python311",
+        "python312",
+        "python313",
+        "node20",
+        "node22",
+        "custom"
+      ],
+      "default": "python312",
+      "description": "Runtime environment. Use 'custom' with 'dockerfile' for full control."
+    }
+  }
+}

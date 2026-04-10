@@ -1,0 +1,10 @@
+extends:
+  - recommended
+
+rules:
+  operation-description: warn
+  operation-4xx-response: off
+  parameter-description: off
+  tag-description: off
+  response-contains-header: off
+  no-unused-components: off

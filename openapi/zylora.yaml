@@ -1,0 +1,3700 @@
+openapi: "3.1.0"
+
+info:
+  title: Zylora API
+  version: "1.0.0"
+  description: |
+    Zylora is a serverless GPU runtime platform. Deploy Python functions on GPUs in seconds —
+    no CUDA setup, no instance management, no DevOps.
+
+    ## Authentication
+
+    Two authentication methods are supported:
+
+    - **Bearer (Clerk JWT)**: Used by the dashboard. Obtained from Clerk after sign-in.
+    - **API Key**: Used by SDKs and CLI. Prefix `zy_live_` for production, `zy_test_` for test mode.
+      Pass as `Authorization: Bearer zy_live_xxxx` or `X-API-Key: zy_live_xxxx`.
+
+    ## Errors
+
+    All errors follow this format:
+    ```json
+    {
+      "error": {
+        "code": "function_not_found",
+        "message": "Function with ID 'abc' does not exist.",
+        "request_id": "01hnxyz..."
+      }
+    }
+    ```
+
+    ## Rate Limiting
+
+    Every response includes rate limit headers:
+    - `X-RateLimit-Limit` — requests allowed per minute
+    - `X-RateLimit-Remaining` — requests remaining
+    - `X-RateLimit-Reset` — Unix timestamp when the window resets
+
+    ## Pagination
+
+    High-volume lists (invocations, usage events) use cursor-based pagination.
+    Smaller lists (functions, models) use offset-based pagination.
+
+    ## Versioning
+
+    The API is versioned via URL path (`/v1/...`). Breaking changes introduce `/v2/...`.
+    Both versions run simultaneously for a minimum of 6 months.
+
+  contact:
+    name: Zylora Support
+    url: https://zylora.dev
+    email: support@zylora.dev
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: https://api.zylora.dev
+    description: Production
+  - url: https://api.staging.zylora.dev
+    description: Staging
+
+tags:
+  - name: Auth
+    description: API key management
+  - name: Functions
+    description: Create and manage serverless GPU functions
+  - name: Deployments
+    description: Deployment lifecycle and traffic control
+  - name: Models
+    description: Model registry — upload and version weights
+  - name: Billing
+    description: Credits, usage, and subscription management
+  - name: Secrets
+    description: Encrypted environment secrets
+  - name: Monitoring
+    description: Metrics, logs, and active instance visibility
+  - name: Notifications
+    description: Alert channels (Slack, Discord, email, webhook)
+  - name: Webhooks
+    description: Outbound event webhooks to your own endpoints
+  - name: System
+    description: Health checks and infrastructure visibility
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATHS
+# ─────────────────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ── Health ─────────────────────────────────────────────────────────────────
+
+  /health/live:
+    get:
+      operationId: livenessCheck
+      summary: Liveness check
+      description: Returns 200 if the process is alive. Used by load balancers.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LivenessResponse"
+              example:
+                status: ok
+                timestamp: "2026-04-10T14:30:00Z"
+
+  /health/ready:
+    get:
+      operationId: readinessCheck
+      summary: Readiness check
+      description: Returns 200 if all dependencies (DB, cache, etc.) are healthy.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: All dependencies healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: One or more dependencies unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+
+  # ── GPU Types ───────────────────────────────────────────────────────────────
+
+  /v1/gpus:
+    get:
+      operationId: listGpuTypes
+      summary: List available GPU types
+      description: Returns all GPU types with current pricing and availability.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: GPU types list
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GpuType"
+              example:
+                data:
+                  - id: h100
+                    display_name: NVIDIA H100 SXM5 80GB
+                    vram_gb: 80
+                    price_per_second_cents: "0.0010"
+                    available: true
+
+  # ── Auth ────────────────────────────────────────────────────────────────────
+
+  /v1/auth/api-keys:
+    post:
+      operationId: createApiKey
+      summary: Create API key
+      description: |
+        Creates a new API key. The full key value is returned **only once** at creation time.
+        Store it immediately — it cannot be retrieved again. Only a prefix and hash are stored.
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateApiKeyRequest"
+            example:
+              name: "Production SDK Key"
+              scopes:
+                - "functions:invoke"
+                - "functions:deploy"
+              expires_at: "2027-01-01T00:00:00Z"
+      responses:
+        "201":
+          description: API key created — includes full key value (shown once only)
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyCreatedResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+    get:
+      operationId: listApiKeys
+      summary: List API keys
+      description: Returns all API keys for the authenticated user. Key values are never returned.
+      tags: [Auth]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: API keys list
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedApiKeys"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/auth/api-keys/{id}:
+    delete:
+      operationId: revokeApiKey
+      summary: Revoke API key
+      description: Permanently revokes an API key. This action is irreversible.
+      tags: [Auth]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "204":
+          description: Key revoked
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Functions ───────────────────────────────────────────────────────────────
+
+  /v1/functions:
+    post:
+      operationId: createFunction
+      summary: Create function
+      description: Creates a new GPU function definition. Triggers no deployment — use `/deploy` for that.
+      tags: [Functions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFunctionRequest"
+            example:
+              name: "embed-text"
+              description: "Text embedding using sentence-transformers"
+              gpu_type: h100
+              runtime: python312
+              entry_point: "main:embed"
+              min_instances: 0
+              max_instances: 10
+              timeout_seconds: 60
+      responses:
+        "201":
+          description: Function created
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Function"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+    get:
+      operationId: listFunctions
+      summary: List functions
+      description: Returns paginated list of functions for the authenticated user/org.
+      tags: [Functions]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: org_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter to a specific organization
+        - name: runtime
+          in: query
+          schema:
+            $ref: "#/components/schemas/RuntimeEnum"
+          description: Filter by runtime
+        - name: gpu_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/GpuTypeEnum"
+          description: Filter by GPU type
+      responses:
+        "200":
+          description: Functions list
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedFunctions"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/functions/{id}:
+    get:
+      operationId: getFunction
+      summary: Get function
+      description: Returns full details for a single function.
+      tags: [Functions]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Function details
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Function"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      operationId: updateFunction
+      summary: Update function
+      description: Updates mutable configuration for a function. Does **not** trigger a deployment.
+      tags: [Functions]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateFunctionRequest"
+      responses:
+        "200":
+          description: Updated function
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Function"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+    delete:
+      operationId: deleteFunction
+      summary: Delete function
+      description: Soft-deletes a function. Active deployments are drained before deletion.
+      tags: [Functions]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "204":
+          description: Function deleted
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /v1/functions/{id}/invoke:
+    post:
+      operationId: invokeFunction
+      summary: Invoke function (synchronous)
+      description: |
+        Synchronously invokes a GPU function and waits for the result.
+        The request body is passed directly to your function's handler.
+        Maximum response wait: 5 minutes (matches `timeout_seconds` default).
+      tags: [Functions]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        description: Arbitrary JSON payload passed to the function handler
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example:
+              text: "The quick brown fox jumps over the lazy dog"
+      responses:
+        "200":
+          description: Function result
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+            X-Invocation-Id:
+              $ref: "#/components/headers/X-Invocation-Id"
+            X-Duration-Ms:
+              $ref: "#/components/headers/X-Duration-Ms"
+            X-Cold-Start:
+              $ref: "#/components/headers/X-Cold-Start"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                embedding: [0.123, -0.456, 0.789]
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "408":
+          $ref: "#/components/responses/Timeout"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/FunctionError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/functions/{id}/invoke/stream:
+    post:
+      operationId: invokeStream
+      summary: Invoke function (streaming SSE)
+      description: |
+        Invokes a function and streams the response as Server-Sent Events.
+        Each SSE event contains a JSON chunk. The stream ends with a `done` event.
+
+        **SSE event types:**
+        - `data`: A chunk of the response (JSON)
+        - `error`: An error occurred during streaming
+        - `done`: Stream complete (no data, signals end)
+
+        ```
+        event: data
+        data: {"chunk": "The"}
+
+        event: data
+        data: {"chunk": " quick"}
+
+        event: done
+        data: {}
+        ```
+      tags: [Functions]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: SSE stream
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Server-Sent Events stream
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/functions/{id}/invoke/async:
+    post:
+      operationId: invokeAsync
+      summary: Invoke function (async)
+      description: |
+        Enqueues an async invocation and returns a job ID immediately.
+        Poll `GET /v1/functions/{id}/invoke/{job_id}` to retrieve the result.
+        Optionally configure `webhook_url` on the function to receive a POST when complete.
+      tags: [Functions]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "202":
+          description: Job enqueued
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncJobResponse"
+              example:
+                job_id: "01hw3abc-0000-7000-0000-000000000001"
+                status: queued
+                created_at: "2026-04-10T14:30:00Z"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /v1/functions/{id}/invoke/{job_id}:
+    get:
+      operationId: getAsyncJob
+      summary: Get async job result
+      description: Polls for the result of an async invocation.
+      tags: [Functions]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Job ID returned from the async invoke endpoint
+      responses:
+        "200":
+          description: Job result (check `status` field — may still be `queued` or `running`)
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncJobResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/functions/{id}/map:
+    post:
+      operationId: invokeMap
+      summary: Batch invoke function
+      description: |
+        Invokes the function once per item in `inputs`, in parallel.
+        Returns an array of results in the same order.
+        Useful for batch embedding, classification, or processing.
+      tags: [Functions]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MapRequest"
+            example:
+              inputs:
+                - text: "Hello world"
+                - text: "Goodbye world"
+              concurrency: 8
+      responses:
+        "200":
+          description: Array of results in input order
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MapResponse"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /v1/functions/{id}/deploy:
+    post:
+      operationId: deployFunction
+      summary: Deploy function
+      description: |
+        Triggers a new deployment for a function. The engine will:
+        1. Build a container image from source
+        2. Push it to the container registry
+        3. Provision GPU instances
+        4. Route traffic once healthy
+
+        Returns a deployment object. Poll the deployment status or subscribe to webhooks
+        for `deployment.active` / `deployment.failed` events.
+      tags: [Deployments]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeployRequest"
+            example:
+              git_ref: "abc1234"
+              git_branch: "main"
+              traffic_percentage: 0
+      responses:
+        "202":
+          description: Deployment queued
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deployment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/functions/{id}/deployments:
+    get:
+      operationId: listFunctionDeployments
+      summary: List deployments for a function
+      description: Returns deployment history for a function, newest first.
+      tags: [Deployments]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/DeploymentStatusEnum"
+          description: Filter by deployment status
+      responses:
+        "200":
+          description: Deployments list
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedDeployments"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/functions/{id}/rollback:
+    post:
+      operationId: rollbackFunction
+      summary: Rollback function
+      description: Rolls back to the previous active deployment.
+      tags: [Deployments]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deployment_id:
+                  type: string
+                  format: uuid
+                  description: Target deployment ID to roll back to (defaults to previous active)
+      responses:
+        "200":
+          description: Rollback initiated — returns the now-active deployment
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deployment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /v1/functions/{id}/metrics:
+    get:
+      operationId: getFunctionMetrics
+      summary: Get function metrics
+      description: Returns aggregated metrics (invocations, latency p50/p95/p99, error rate) for a function.
+      tags: [Monitoring]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/DateFrom"
+        - $ref: "#/components/parameters/DateTo"
+        - name: granularity
+          in: query
+          schema:
+            type: string
+            enum: [minute, hour, day]
+            default: hour
+          description: Time bucket granularity
+      responses:
+        "200":
+          description: Metrics data
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FunctionMetrics"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/functions/{id}/logs:
+    get:
+      operationId: getFunctionLogs
+      summary: Get invocation logs
+      description: Returns paginated invocation logs for a function. Cursor-based pagination.
+      tags: [Monitoring]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PerPage"
+        - $ref: "#/components/parameters/DateFrom"
+        - $ref: "#/components/parameters/DateTo"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/InvocationStatusEnum"
+          description: Filter by invocation status
+      responses:
+        "200":
+          description: Invocation logs
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedInvocations"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Deployments ─────────────────────────────────────────────────────────────
+
+  /v1/deployments/{id}:
+    get:
+      operationId: getDeployment
+      summary: Get deployment
+      description: Returns full details for a deployment, including build logs URL.
+      tags: [Deployments]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Deployment details
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deployment"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/deployments/{id}/promote:
+    post:
+      operationId: promoteDeployment
+      summary: Set deployment traffic
+      description: |
+        Sets the traffic percentage for a deployment.
+        Setting to 100 makes it the active deployment.
+        Use for canary rollouts: start at 10%, monitor, then promote to 100%.
+      tags: [Deployments]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [traffic_percentage]
+              properties:
+                traffic_percentage:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+                  description: Percentage of traffic to route to this deployment
+            example:
+              traffic_percentage: 100
+      responses:
+        "200":
+          description: Updated deployment
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deployment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/deployments/{id}/logs:
+    get:
+      operationId: getDeploymentLogs
+      summary: Get build logs
+      description: Returns build logs for a deployment.
+      tags: [Deployments]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Build logs
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildLogs"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Models ──────────────────────────────────────────────────────────────────
+
+  /v1/models:
+    post:
+      operationId: createModel
+      summary: Register model
+      description: Creates a new model entry. Use `POST /v1/models/{id}/versions` to upload weights.
+      tags: [Models]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateModelRequest"
+            example:
+              name: "llama-3-8b-instruct"
+              description: "Meta Llama 3 8B Instruct"
+              framework: pytorch
+              task: text-generation
+      responses:
+        "201":
+          description: Model created
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Model"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+    get:
+      operationId: listModels
+      summary: List models
+      description: Returns paginated list of models for the authenticated user/org.
+      tags: [Models]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: framework
+          in: query
+          schema:
+            $ref: "#/components/schemas/MlFrameworkEnum"
+      responses:
+        "200":
+          description: Models list
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedModels"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/models/{id}:
+    get:
+      operationId: getModel
+      summary: Get model
+      description: Returns model details including all versions.
+      tags: [Models]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Model details
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Model"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/models/{id}/versions:
+    post:
+      operationId: uploadModelVersion
+      summary: Push new model version
+      description: |
+        Registers a new model version and returns a presigned upload URL.
+        Upload your model weights directly to the returned URL using HTTP PUT.
+        The version becomes available once the upload completes (detected via webhook or polling).
+      tags: [Models]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateModelVersionRequest"
+            example:
+              format: safetensors
+              size_bytes: 16000000000
+              sha256: "a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4"
+              vram_required_mb: 16000
+      responses:
+        "201":
+          description: Version created with presigned upload URL
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelVersionUploadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+
+    get:
+      operationId: listModelVersions
+      summary: List model versions
+      description: Returns all versions for a model, newest first.
+      tags: [Models]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: Model versions list
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedModelVersions"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/models/{id}/versions/{version}/promote:
+    post:
+      operationId: promoteModelVersion
+      summary: Set model version traffic
+      description: Sets what percentage of requests use this model version.
+      tags: [Models]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+          description: Version number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [traffic_percentage]
+              properties:
+                traffic_percentage:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+      responses:
+        "200":
+          description: Updated traffic rules
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/models/{id}/versions/{version}/download:
+    get:
+      operationId: downloadModelVersion
+      summary: Get presigned download URL
+      description: Returns a time-limited presigned URL to download model weights.
+      tags: [Models]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Presigned download URL (valid for 1 hour)
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url, expires_at]
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                    description: Presigned URL — PUT your file here
+                  expires_at:
+                    type: string
+                    format: date-time
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Billing ─────────────────────────────────────────────────────────────────
+
+  /v1/billing/credits:
+    get:
+      operationId: getCreditBalance
+      summary: Get credit balance
+      description: Returns current credit balance and auto-recharge settings.
+      tags: [Billing]
+      responses:
+        "200":
+          description: Credit balance
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreditBalance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/billing/credits/topup:
+    post:
+      operationId: topupCredits
+      summary: Top up credits
+      description: |
+        Initiates a one-time credit purchase. Returns a redirect URL to the
+        payment provider checkout page (Dodo Payments).
+      tags: [Billing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount_cents]
+              properties:
+                amount_cents:
+                  type: integer
+                  minimum: 500
+                  description: Amount to purchase in integer cents (minimum $5.00)
+                  example: 2000
+                success_url:
+                  type: string
+                  format: uri
+                  description: URL to redirect after successful payment
+                cancel_url:
+                  type: string
+                  format: uri
+                  description: URL to redirect after cancelled payment
+      responses:
+        "200":
+          description: Checkout redirect URL
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checkout_url]
+                properties:
+                  checkout_url:
+                    type: string
+                    format: uri
+                    description: Redirect the user to this URL to complete payment
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/billing/usage:
+    get:
+      operationId: getUsageSummary
+      summary: Get usage summary
+      description: Returns aggregated usage and cost for a time period.
+      tags: [Billing]
+      parameters:
+        - $ref: "#/components/parameters/DateFrom"
+        - $ref: "#/components/parameters/DateTo"
+        - name: granularity
+          in: query
+          schema:
+            type: string
+            enum: [day, week, month]
+            default: day
+      responses:
+        "200":
+          description: Usage summary
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/billing/usage/detailed:
+    get:
+      operationId: getDetailedUsage
+      summary: Get detailed usage events
+      description: Returns paginated raw usage events with cursor-based pagination.
+      tags: [Billing]
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PerPage"
+        - $ref: "#/components/parameters/DateFrom"
+        - $ref: "#/components/parameters/DateTo"
+        - name: event_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/UsageEventTypeEnum"
+      responses:
+        "200":
+          description: Usage events
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedUsageEvents"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/billing/plan:
+    get:
+      operationId: getCurrentPlan
+      summary: Get current plan
+      description: Returns the active subscription plan and details.
+      tags: [Billing]
+      responses:
+        "200":
+          description: Current plan details
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanDetails"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      operationId: changePlan
+      summary: Change plan
+      description: |
+        Initiates a plan change. Returns a redirect URL to the payment provider checkout.
+        Downgrades take effect at the end of the current billing period.
+      tags: [Billing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tier]
+              properties:
+                tier:
+                  $ref: "#/components/schemas/TierEnum"
+                billing_interval:
+                  type: string
+                  enum: [month, year]
+                  default: month
+                success_url:
+                  type: string
+                  format: uri
+                cancel_url:
+                  type: string
+                  format: uri
+      responses:
+        "200":
+          description: Plan change redirect URL
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checkout_url]
+                properties:
+                  checkout_url:
+                    type: string
+                    format: uri
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Secrets ─────────────────────────────────────────────────────────────────
+
+  /v1/secrets:
+    post:
+      operationId: createSecret
+      summary: Create secret
+      description: |
+        Creates an encrypted secret. The value is encrypted at the application layer
+        (AES-256-GCM) before storage. Secret values are **never** returned after creation.
+      tags: [Secrets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSecretRequest"
+            example:
+              name: "OPENAI_API_KEY"
+              value: "sk-..."
+              function_id: null
+      responses:
+        "201":
+          description: Secret created (value not returned)
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Secret"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+    get:
+      operationId: listSecrets
+      summary: List secrets
+      description: Returns secret names and metadata. Values are **never** returned.
+      tags: [Secrets]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: function_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter to function-scoped secrets
+      responses:
+        "200":
+          description: Secrets list (names only)
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedSecrets"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/secrets/{id}:
+    delete:
+      operationId: deleteSecret
+      summary: Delete secret
+      description: Permanently deletes a secret. This action is irreversible.
+      tags: [Secrets]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "204":
+          description: Secret deleted
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Monitoring ──────────────────────────────────────────────────────────────
+
+  /v1/instances:
+    get:
+      operationId: listInstances
+      summary: List active GPU instances
+      description: Returns currently running and idle GPU instances across all functions.
+      tags: [Monitoring]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: function_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter to a specific function
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/InstanceStatusEnum"
+      responses:
+        "200":
+          description: Instances list
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedInstances"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Notifications ────────────────────────────────────────────────────────────
+
+  /v1/notifications/channels:
+    post:
+      operationId: createNotificationChannel
+      summary: Create notification channel
+      description: Creates a new alert channel (Slack, Discord, email, or webhook).
+      tags: [Notifications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNotificationChannelRequest"
+            example:
+              name: "Slack #alerts"
+              channel_type: slack
+              config:
+                webhook_url: "https://hooks.slack.com/services/..."
+              events:
+                - deployment.failed
+                - credits.low
+      responses:
+        "201":
+          description: Channel created
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationChannel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    get:
+      operationId: listNotificationChannels
+      summary: List notification channels
+      description: Returns all notification channels for the authenticated user or org.
+      tags: [Notifications]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: Notification channels list
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedNotificationChannels"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/notifications/channels/{id}:
+    patch:
+      operationId: updateNotificationChannel
+      summary: Update notification channel
+      description: Updates configuration, subscribed events, or enabled state of a notification channel.
+      tags: [Notifications]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateNotificationChannelRequest"
+      responses:
+        "200":
+          description: Updated channel
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationChannel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      operationId: deleteNotificationChannel
+      summary: Delete notification channel
+      description: Permanently deletes a notification channel.
+      tags: [Notifications]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "204":
+          description: Channel deleted
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/notifications/channels/{id}/test:
+    post:
+      operationId: testNotificationChannel
+      summary: Send test notification
+      description: Sends a test message to verify the channel is correctly configured.
+      tags: [Notifications]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Test notification sent
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, message]
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Webhooks ─────────────────────────────────────────────────────────────────
+
+  /v1/webhooks:
+    post:
+      operationId: createWebhook
+      summary: Create webhook
+      description: |
+        Creates an outbound webhook. When subscribed events occur, Zylora will POST
+        a signed payload to your URL.
+
+        Every delivery includes:
+        - `X-Zylora-Signature`: HMAC-SHA256 of the raw body using your webhook secret
+        - `X-Zylora-Event`: Event type (e.g., `deployment.active`)
+        - `X-Zylora-Delivery-Id`: UUID v7 for idempotency
+
+        The webhook secret is returned **once** at creation — store it securely.
+      tags: [Webhooks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWebhookRequest"
+            example:
+              url: "https://my-app.example.com/webhooks/zylora"
+              events:
+                - deployment.active
+                - deployment.failed
+                - credits.low
+      responses:
+        "201":
+          description: Webhook created — includes secret (shown once)
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookCreatedResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+    get:
+      operationId: listWebhooks
+      summary: List webhooks
+      description: Returns all outbound webhooks configured for the authenticated user or org.
+      tags: [Webhooks]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: Webhooks list
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedWebhooks"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/webhooks/{id}:
+    patch:
+      operationId: updateWebhook
+      summary: Update webhook
+      description: Updates the URL, subscribed events, or enabled state of a webhook.
+      tags: [Webhooks]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateWebhookRequest"
+      responses:
+        "200":
+          description: Updated webhook
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Webhook"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      operationId: deleteWebhook
+      summary: Delete webhook
+      description: Permanently deletes a webhook endpoint.
+      tags: [Webhooks]
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "204":
+          description: Webhook deleted
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+components:
+
+  # ── Security Schemes ────────────────────────────────────────────────────────
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Clerk JWT obtained after sign-in. Used by the dashboard.
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Zylora API key with prefix `zy_live_` (production) or `zy_test_` (test mode).
+        Alternatively pass as `Authorization: Bearer zy_live_xxxx`.
+
+  # ── Reusable Headers ────────────────────────────────────────────────────────
+
+  headers:
+    X-Request-Id:
+      description: Unique request ID (UUID v7). Include in support requests.
+      schema:
+        type: string
+        format: uuid
+    X-RateLimit-Limit:
+      description: Maximum requests per minute for this endpoint
+      schema:
+        type: integer
+    X-RateLimit-Remaining:
+      description: Remaining requests in the current window
+      schema:
+        type: integer
+    X-RateLimit-Reset:
+      description: Unix timestamp (seconds) when the rate limit window resets
+      schema:
+        type: integer
+        format: int64
+    X-Invocation-Id:
+      description: Invocation ID for the function call (UUID v7)
+      schema:
+        type: string
+        format: uuid
+    X-Duration-Ms:
+      description: Function execution duration in milliseconds
+      schema:
+        type: integer
+    X-Cold-Start:
+      description: Whether this invocation triggered a cold start
+      schema:
+        type: boolean
+
+  # ── Header Collections (referenced by responses) ─────────────────────────
+  # Note: OpenAPI 3.1 doesn't support $ref directly in `headers` of responses
+  # for header groups, so we reference individual headers inline in each response header block.
+  # The 'RateLimitHeaders' and 'InvocationHeaders' below are used as descriptive references
+  # only and individual responses should list headers directly. These are kept here as
+  # documentation anchors.
+
+  # ── Parameters ──────────────────────────────────────────────────────────────
+
+  parameters:
+    ResourceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: UUID v7 resource identifier
+
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+      description: Page number (1-indexed)
+
+    PerPage:
+      name: per_page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+      description: Items per page (max 200)
+
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+        format: uuid
+      description: Cursor for pagination (opaque UUID v7 of last seen item)
+
+    DateFrom:
+      name: from
+      in: query
+      schema:
+        type: string
+        format: date-time
+      description: "Start of time range (ISO 8601 UTC, e.g. 2026-04-01T00:00:00Z)"
+
+    DateTo:
+      name: to
+      in: query
+      schema:
+        type: string
+        format: date-time
+      description: "End of time range (ISO 8601 UTC, e.g. 2026-04-30T23:59:59Z)"
+
+  # ── Enum Schemas (reusable) ─────────────────────────────────────────────────
+
+  schemas:
+
+    TierEnum:
+      type: string
+      enum: [free, hacker, team, enterprise]
+      description: Account subscription tier
+
+    GpuTypeEnum:
+      type: string
+      enum: [t4, l4, rtx4090, a100_40gb, a100_80gb, l40s, h100, h200, b200, mi300x]
+      description: GPU instance type
+
+    RuntimeEnum:
+      type: string
+      enum: [python310, python311, python312, python313, node20, node22, custom]
+      description: Function runtime environment
+
+    VisibilityEnum:
+      type: string
+      enum: [public, private, unlisted]
+      description: Function visibility
+
+    DeploymentStatusEnum:
+      type: string
+      enum:
+        - queued
+        - building
+        - pushing
+        - deploying
+        - active
+        - draining
+        - failed
+        - superseded
+        - rolled_back
+      description: Deployment lifecycle state
+
+    InvocationStatusEnum:
+      type: string
+      enum:
+        - queued
+        - cold_starting
+        - running
+        - streaming
+        - completed
+        - failed
+        - timeout
+        - cancelled
+      description: Invocation lifecycle state
+
+    InstanceStatusEnum:
+      type: string
+      enum:
+        - provisioning
+        - starting
+        - running
+        - idle
+        - snapshotting
+        - terminating
+        - terminated
+        - failed
+      description: GPU instance lifecycle state
+
+    MlFrameworkEnum:
+      type: string
+      enum: [pytorch, tensorflow, onnx, gguf, jax, triton, vllm, trt_llm, other]
+      description: ML framework
+
+    ModelFormatEnum:
+      type: string
+      enum: [safetensors, gguf, bin, pt, onnx, tflite, openvino]
+      description: Model weight format
+
+    UsageEventTypeEnum:
+      type: string
+      enum:
+        - gpu_compute
+        - cpu_compute
+        - storage
+        - egress
+        - build_minutes
+        - log_storage
+        - model_download
+      description: Usage / billing event type
+
+    NotificationChannelTypeEnum:
+      type: string
+      enum: [email, slack, discord, webhook, pagerduty, teams]
+      description: Notification delivery channel type
+
+    WebhookEventEnum:
+      type: string
+      enum:
+        - deployment.queued
+        - deployment.building
+        - deployment.active
+        - deployment.failed
+        - invocation.completed
+        - invocation.failed
+        - invocation.timeout
+        - credits.low
+        - credits.depleted
+        - credits.recharged
+        - model.pushed
+        - model.promoted
+        - instance.started
+        - instance.terminated
+      description: Webhook event type
+
+    # ── Core Entities ─────────────────────────────────────────────────────────
+
+    User:
+      type: object
+      required: [id, email, plan, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUID v7
+        email:
+          type: string
+          format: email
+        display_name:
+          type: [string, "null"]
+        avatar_url:
+          type: [string, "null"]
+          format: uri
+        plan:
+          $ref: "#/components/schemas/TierEnum"
+        phone_verified:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ApiKey:
+      type: object
+      required: [id, name, key_prefix, scopes, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        key_prefix:
+          type: string
+          description: First 8 characters of the key (e.g. "zy_live_")
+          example: "zy_live_ab"
+        scopes:
+          type: array
+          items:
+            type: string
+          example: ["functions:invoke", "functions:deploy"]
+        last_used_at:
+          type: [string, "null"]
+          format: date-time
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+
+    ApiKeyCreatedResponse:
+      allOf:
+        - $ref: "#/components/schemas/ApiKey"
+        - type: object
+          required: [key]
+          properties:
+            key:
+              type: string
+              description: Full API key value — shown ONCE. Store immediately.
+              example: "zy_live_abcdefghijklmnopqrstuvwxyz0123456789"
+
+    CreateApiKeyRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        scopes:
+          type: array
+          items:
+            type: string
+          default: []
+          description: |
+            Permission scopes. Empty array grants all scopes.
+            Available scopes: `functions:invoke`, `functions:deploy`, `functions:read`,
+            `models:read`, `models:write`, `billing:read`, `secrets:write`.
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+          description: Key expiration time (null = never expires)
+
+    Function:
+      type: object
+      required:
+        - id
+        - name
+        - slug
+        - gpu_type
+        - runtime
+        - entry_point
+        - min_instances
+        - max_instances
+        - concurrency
+        - timeout_seconds
+        - visibility
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        org_id:
+          type: [string, "null"]
+          format: uuid
+        name:
+          type: string
+          example: "embed-text"
+        slug:
+          type: string
+          description: URL-safe identifier (e.g. fn.zylora.dev/{slug})
+          example: "embed-text"
+        description:
+          type: [string, "null"]
+        gpu_type:
+          $ref: "#/components/schemas/GpuTypeEnum"
+        gpu_count:
+          type: integer
+          default: 1
+        runtime:
+          $ref: "#/components/schemas/RuntimeEnum"
+        entry_point:
+          type: string
+          description: "Python handler path, e.g. 'main:embed'"
+          example: "main:embed"
+        min_instances:
+          type: integer
+          minimum: 0
+          default: 0
+        max_instances:
+          type: integer
+          minimum: 1
+          default: 10
+        concurrency:
+          type: integer
+          minimum: 1
+          default: 1
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 3600
+          default: 300
+        schedule:
+          type: [string, "null"]
+          description: Cron expression for scheduled invocations
+        schedule_enabled:
+          type: boolean
+          default: false
+        model_id:
+          type: [string, "null"]
+          format: uuid
+        visibility:
+          $ref: "#/components/schemas/VisibilityEnum"
+        environment:
+          type: object
+          additionalProperties:
+            type: string
+          description: Non-secret environment variables
+        active_deployment_id:
+          type: [string, "null"]
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        deleted_at:
+          type: [string, "null"]
+          format: date-time
+
+    CreateFunctionRequest:
+      type: object
+      required: [name, gpu_type, entry_point]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          pattern: "^[a-z0-9][a-z0-9-]{0,98}[a-z0-9]$"
+          description: Lowercase alphanumeric with hyphens
+        description:
+          type: string
+          maxLength: 500
+        gpu_type:
+          $ref: "#/components/schemas/GpuTypeEnum"
+        gpu_count:
+          type: integer
+          minimum: 1
+          default: 1
+        runtime:
+          $ref: "#/components/schemas/RuntimeEnum"
+          default: python312
+        entry_point:
+          type: string
+          example: "main:embed"
+        min_instances:
+          type: integer
+          minimum: 0
+          default: 0
+        max_instances:
+          type: integer
+          minimum: 1
+          default: 10
+        concurrency:
+          type: integer
+          minimum: 1
+          default: 1
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 3600
+          default: 300
+        org_id:
+          type: string
+          format: uuid
+          description: Assign to an organization (requires membership)
+        environment:
+          type: object
+          additionalProperties:
+            type: string
+        visibility:
+          $ref: "#/components/schemas/VisibilityEnum"
+          default: private
+
+    UpdateFunctionRequest:
+      type: object
+      properties:
+        description:
+          type: string
+          maxLength: 500
+        gpu_type:
+          $ref: "#/components/schemas/GpuTypeEnum"
+        min_instances:
+          type: integer
+          minimum: 0
+        max_instances:
+          type: integer
+          minimum: 1
+        concurrency:
+          type: integer
+          minimum: 1
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 3600
+        schedule:
+          type: [string, "null"]
+        schedule_enabled:
+          type: boolean
+        environment:
+          type: object
+          additionalProperties:
+            type: string
+        visibility:
+          $ref: "#/components/schemas/VisibilityEnum"
+
+    Deployment:
+      type: object
+      required:
+        - id
+        - function_id
+        - version
+        - status
+        - config_snapshot
+        - traffic_percentage
+        - queued_at
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        function_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          description: Monotonically increasing version number
+        status:
+          $ref: "#/components/schemas/DeploymentStatusEnum"
+        container_image:
+          type: [string, "null"]
+          example: "ghcr.io/zylora-dev/fn-abc123:v5"
+        image_digest:
+          type: [string, "null"]
+          description: SHA-256 image digest
+        image_size_bytes:
+          type: [integer, "null"]
+          format: int64
+        build_log_url:
+          type: [string, "null"]
+          format: uri
+        build_duration_ms:
+          type: [integer, "null"]
+          format: int64
+        source_hash:
+          type: [string, "null"]
+        git_ref:
+          type: [string, "null"]
+        git_branch:
+          type: [string, "null"]
+        config_snapshot:
+          type: object
+          description: Immutable snapshot of function config at deploy time
+        traffic_percentage:
+          type: integer
+          minimum: 0
+          maximum: 100
+        queued_at:
+          type: string
+          format: date-time
+        build_started_at:
+          type: [string, "null"]
+          format: date-time
+        build_completed_at:
+          type: [string, "null"]
+          format: date-time
+        deployed_at:
+          type: [string, "null"]
+          format: date-time
+        failure_reason:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+
+    DeployRequest:
+      type: object
+      properties:
+        git_ref:
+          type: string
+          description: Commit SHA to deploy
+        git_branch:
+          type: string
+          description: Branch name
+        traffic_percentage:
+          type: integer
+          minimum: 0
+          maximum: 100
+          default: 0
+          description: Initial traffic percentage (use /promote to change after deploy)
+
+    BuildLogs:
+      type: object
+      required: [deployment_id, lines]
+      properties:
+        deployment_id:
+          type: string
+          format: uuid
+        lines:
+          type: array
+          items:
+            type: object
+            required: [timestamp, level, message]
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              level:
+                type: string
+                enum: [info, warn, error]
+              message:
+                type: string
+
+    Invocation:
+      type: object
+      required:
+        - id
+        - function_id
+        - deployment_id
+        - status
+        - gpu_type
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        function_id:
+          type: string
+          format: uuid
+        deployment_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/InvocationStatusEnum"
+        gpu_type:
+          $ref: "#/components/schemas/GpuTypeEnum"
+        duration_ms:
+          type: [integer, "null"]
+          format: int64
+        gpu_seconds:
+          type: [number, "null"]
+          description: Fractional GPU-seconds consumed
+        cold_start:
+          type: boolean
+        cold_start_ms:
+          type: [integer, "null"]
+        cost_cents:
+          type: [integer, "null"]
+          format: int64
+          description: Cost in integer cents
+        input_size_bytes:
+          type: [integer, "null"]
+          format: int64
+        output_size_bytes:
+          type: [integer, "null"]
+          format: int64
+        is_streaming:
+          type: boolean
+        error_code:
+          type: [string, "null"]
+        error_message:
+          type: [string, "null"]
+        request_id:
+          type: [string, "null"]
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+
+    AsyncJobResponse:
+      type: object
+      required: [job_id, status, created_at]
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/InvocationStatusEnum"
+        created_at:
+          type: string
+          format: date-time
+
+    AsyncJobResult:
+      type: object
+      required: [job_id, status, created_at]
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/InvocationStatusEnum"
+        result:
+          type: [object, "null"]
+          additionalProperties: true
+          description: Present only when status is `completed`
+        error:
+          type: [object, "null"]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+          description: Present only when status is `failed` or `timeout`
+        duration_ms:
+          type: [integer, "null"]
+        cost_cents:
+          type: [integer, "null"]
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+
+    MapRequest:
+      type: object
+      required: [inputs]
+      properties:
+        inputs:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          minItems: 1
+          maxItems: 1000
+          description: Array of input payloads (each is passed to the function handler)
+        concurrency:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+          description: Maximum concurrent invocations
+
+    MapResponse:
+      type: object
+      required: [results, total, succeeded, failed]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [index, status]
+            properties:
+              index:
+                type: integer
+                description: Corresponds to the input array index
+              status:
+                type: string
+                enum: [completed, failed, timeout]
+              result:
+                type: [object, "null"]
+                additionalProperties: true
+              error:
+                type: [string, "null"]
+        total:
+          type: integer
+        succeeded:
+          type: integer
+        failed:
+          type: integer
+
+    FunctionMetrics:
+      type: object
+      required: [function_id, from, to, granularity, buckets]
+      properties:
+        function_id:
+          type: string
+          format: uuid
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        granularity:
+          type: string
+          enum: [minute, hour, day]
+        buckets:
+          type: array
+          items:
+            type: object
+            required: [timestamp, invocations, errors, p50_ms, p95_ms, p99_ms, total_cost_cents]
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              invocations:
+                type: integer
+              errors:
+                type: integer
+              p50_ms:
+                type: number
+              p95_ms:
+                type: number
+              p99_ms:
+                type: number
+              cold_starts:
+                type: integer
+              total_cost_cents:
+                type: integer
+                format: int64
+
+    Model:
+      type: object
+      required: [id, name, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        org_id:
+          type: [string, "null"]
+          format: uuid
+        name:
+          type: string
+        description:
+          type: [string, "null"]
+        framework:
+          $ref: "#/components/schemas/MlFrameworkEnum"
+        task:
+          type: [string, "null"]
+          example: "text-generation"
+        source:
+          type: [string, "null"]
+          example: "huggingface"
+        base_model_id:
+          type: [string, "null"]
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        deleted_at:
+          type: [string, "null"]
+          format: date-time
+
+    CreateModelRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          pattern: "^[a-z0-9][a-z0-9._-]{0,98}[a-z0-9]$"
+        description:
+          type: string
+          maxLength: 500
+        framework:
+          $ref: "#/components/schemas/MlFrameworkEnum"
+        task:
+          type: string
+          maxLength: 100
+        source:
+          type: string
+          maxLength: 200
+        org_id:
+          type: string
+          format: uuid
+
+    ModelVersion:
+      type: object
+      required: [id, model_id, version, storage_path, sha256, size_bytes, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        model_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        storage_path:
+          type: string
+          description: R2 object path
+        sha256:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        vram_required_mb:
+          type: [integer, "null"]
+        format:
+          $ref: "#/components/schemas/ModelFormatEnum"
+        source_url:
+          type: [string, "null"]
+        source_commit:
+          type: [string, "null"]
+        traffic_percentage:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Current traffic percentage for this version
+        created_at:
+          type: string
+          format: date-time
+
+    CreateModelVersionRequest:
+      type: object
+      required: [size_bytes, sha256]
+      properties:
+        format:
+          $ref: "#/components/schemas/ModelFormatEnum"
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+        sha256:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+          description: SHA-256 hex digest of the file
+        vram_required_mb:
+          type: integer
+          minimum: 0
+        source_url:
+          type: string
+          maxLength: 500
+
+    ModelVersionUploadResponse:
+      allOf:
+        - $ref: "#/components/schemas/ModelVersion"
+        - type: object
+          required: [upload_url, upload_expires_at]
+          properties:
+            upload_url:
+              type: string
+              format: uri
+              description: Presigned R2 upload URL — PUT your file here
+            upload_expires_at:
+              type: string
+              format: date-time
+              description: URL expires after 2 hours
+
+    CreditBalance:
+      type: object
+      required:
+        - balance_cents
+        - lifetime_credits_cents
+        - lifetime_usage_cents
+        - free_credits_cents
+      properties:
+        balance_cents:
+          type: integer
+          format: int64
+          description: Current balance in integer cents
+          example: 4750
+        lifetime_credits_cents:
+          type: integer
+          format: int64
+          description: Total credits ever granted or purchased
+        lifetime_usage_cents:
+          type: integer
+          format: int64
+          description: Total credits ever consumed
+        free_credits_cents:
+          type: integer
+          format: int64
+          description: Monthly free credits included with plan
+        free_credits_reset_at:
+          type: [string, "null"]
+          format: date-time
+        auto_recharge:
+          type: boolean
+          description: Whether auto-recharge is enabled
+        auto_recharge_threshold_cents:
+          type: [integer, "null"]
+          format: int64
+          description: Balance threshold that triggers auto-recharge
+        auto_recharge_amount_cents:
+          type: [integer, "null"]
+          format: int64
+          description: Amount to top up when threshold is hit
+        monthly_cap_cents:
+          type: [integer, "null"]
+          format: int64
+          description: Hard monthly spending cap (null = no cap)
+        current_month_usage_cents:
+          type: integer
+          format: int64
+          description: Usage so far this month
+
+    UsageSummary:
+      type: object
+      required: [from, to, total_cost_cents, buckets]
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        total_cost_cents:
+          type: integer
+          format: int64
+        total_invocations:
+          type: integer
+        total_gpu_seconds:
+          type: number
+        buckets:
+          type: array
+          items:
+            type: object
+            required: [date, cost_cents, invocations]
+            properties:
+              date:
+                type: string
+                format: date-time
+              cost_cents:
+                type: integer
+                format: int64
+              invocations:
+                type: integer
+              gpu_seconds:
+                type: number
+
+    UsageEvent:
+      type: object
+      required: [id, event_type, quantity, unit, unit_cost_cents, total_cost_cents, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        invocation_id:
+          type: [string, "null"]
+          format: uuid
+        event_type:
+          $ref: "#/components/schemas/UsageEventTypeEnum"
+        gpu_type:
+          $ref: "#/components/schemas/GpuTypeEnum"
+        quantity:
+          type: number
+          description: Quantity consumed (GPU-seconds, GB, minutes, etc.)
+        unit:
+          type: string
+          description: Unit of measurement (e.g. 'gpu_seconds', 'gb_months')
+        unit_cost_cents:
+          type: number
+          description: Cost per unit (may be fractional)
+        total_cost_cents:
+          type: integer
+          format: int64
+          description: Total cost in integer cents
+        created_at:
+          type: string
+          format: date-time
+
+    PlanDetails:
+      type: object
+      required: [tier, status, price_cents, currency, current_period_start, current_period_end]
+      properties:
+        tier:
+          $ref: "#/components/schemas/TierEnum"
+        status:
+          type: string
+          enum: [active, trialing, past_due, cancelled, expired, paused, incomplete]
+        price_cents:
+          type: integer
+          format: int64
+          description: Monthly/yearly price in integer cents
+        currency:
+          type: string
+          example: usd
+        billing_interval:
+          type: string
+          enum: [month, year]
+        current_period_start:
+          type: string
+          format: date-time
+        current_period_end:
+          type: string
+          format: date-time
+        cancel_at_period_end:
+          type: boolean
+        trial_end:
+          type: [string, "null"]
+          format: date-time
+        credits_included_cents:
+          type: integer
+          format: int64
+          description: Monthly credits included with this plan
+
+    Secret:
+      type: object
+      required: [id, name, version, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "OPENAI_API_KEY"
+        function_id:
+          type: [string, "null"]
+          format: uuid
+          description: null = user/org-wide secret
+        version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateSecretRequest:
+      type: object
+      required: [name, value]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: "^[A-Z][A-Z0-9_]*$"
+          description: "UPPER_SNAKE_CASE name (e.g. DATABASE_URL)"
+        value:
+          type: string
+          minLength: 1
+          maxLength: 65536
+          description: Secret value — encrypted before storage, never returned
+        function_id:
+          type: [string, "null"]
+          format: uuid
+          description: Scope to a specific function (null = user/org-wide)
+
+    Instance:
+      type: object
+      required: [id, provider, function_id, deployment_id, gpu_type, status, started_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+          enum: [runpod_serverless, runpod_pods, vastai, gcp_spot, lambda, coreweave]
+        function_id:
+          type: string
+          format: uuid
+        deployment_id:
+          type: string
+          format: uuid
+        gpu_type:
+          $ref: "#/components/schemas/GpuTypeEnum"
+        gpu_count:
+          type: integer
+          default: 1
+        status:
+          $ref: "#/components/schemas/InstanceStatusEnum"
+        region:
+          type: [string, "null"]
+        cost_per_second_cents:
+          type: [number, "null"]
+          description: Cost per second in fractional cents
+        started_at:
+          type: string
+          format: date-time
+        ready_at:
+          type: [string, "null"]
+          format: date-time
+        last_invocation_at:
+          type: [string, "null"]
+          format: date-time
+        idle_since:
+          type: [string, "null"]
+          format: date-time
+
+    NotificationChannel:
+      type: object
+      required: [id, channel_type, name, enabled, verified, events, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        channel_type:
+          $ref: "#/components/schemas/NotificationChannelTypeEnum"
+        name:
+          type: string
+        enabled:
+          type: boolean
+        verified:
+          type: boolean
+        events:
+          type: array
+          items:
+            type: string
+          description: Subscribed event types
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateNotificationChannelRequest:
+      type: object
+      required: [name, channel_type, config]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        channel_type:
+          $ref: "#/components/schemas/NotificationChannelTypeEnum"
+        config:
+          type: object
+          description: |
+            Channel-specific config:
+            - **slack/discord/webhook**: `{ "webhook_url": "https://..." }`
+            - **email**: `{ "email": "user@example.com" }`
+          additionalProperties: true
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEventEnum"
+          default: []
+
+    UpdateNotificationChannelRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        config:
+          type: object
+          additionalProperties: true
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEventEnum"
+        enabled:
+          type: boolean
+
+    Webhook:
+      type: object
+      required: [id, url, events, enabled, failure_count, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEventEnum"
+        enabled:
+          type: boolean
+        failure_count:
+          type: integer
+        last_triggered_at:
+          type: [string, "null"]
+          format: date-time
+        last_success_at:
+          type: [string, "null"]
+          format: date-time
+        last_failure_at:
+          type: [string, "null"]
+          format: date-time
+        disabled_reason:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    WebhookCreatedResponse:
+      allOf:
+        - $ref: "#/components/schemas/Webhook"
+        - type: object
+          required: [secret]
+          properties:
+            secret:
+              type: string
+              description: |
+                HMAC signing secret — shown ONCE, store securely.
+                Use it to verify `X-Zylora-Signature` on incoming deliveries.
+
+    CreateWebhookRequest:
+      type: object
+      required: [url, events]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: HTTPS endpoint that will receive POST requests (no private IPs)
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEventEnum"
+          minItems: 1
+
+    UpdateWebhookRequest:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEventEnum"
+          minItems: 1
+        enabled:
+          type: boolean
+
+    GpuType:
+      type: object
+      required: [id, display_name, vram_gb, price_per_second_cents, available]
+      properties:
+        id:
+          $ref: "#/components/schemas/GpuTypeEnum"
+        display_name:
+          type: string
+          example: "NVIDIA H100 SXM5 80GB"
+        vram_gb:
+          type: integer
+          example: 80
+        price_per_second_cents:
+          type: string
+          description: Price per GPU-second in fractional cents (string to avoid float precision)
+          example: "0.0010"
+        available:
+          type: boolean
+        regions:
+          type: array
+          items:
+            type: string
+          description: Available regions
+
+    LivenessResponse:
+      type: object
+      required: [status, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        timestamp:
+          type: string
+          format: date-time
+
+    ReadinessResponse:
+      type: object
+      required: [status, checks, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, unhealthy]
+        checks:
+          type: object
+          description: Dependency health check results
+          additionalProperties:
+            type: object
+            required: [status]
+            properties:
+              status:
+                type: string
+                enum: [ok, degraded, unhealthy]
+              latency_ms:
+                type: [integer, "null"]
+              error:
+                type: [string, "null"]
+        timestamp:
+          type: string
+          format: date-time
+
+    # ── Pagination Wrappers ───────────────────────────────────────────────────
+
+    OffsetPagination:
+      type: object
+      required: [total, page, per_page, has_more]
+      properties:
+        total:
+          type: integer
+        page:
+          type: integer
+        per_page:
+          type: integer
+        has_more:
+          type: boolean
+
+    CursorPagination:
+      type: object
+      required: [has_more]
+      properties:
+        has_more:
+          type: boolean
+        next_cursor:
+          type: [string, "null"]
+          format: uuid
+          description: Pass as `cursor` in next request
+
+    PaginatedApiKeys:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApiKey"
+        pagination:
+          $ref: "#/components/schemas/OffsetPagination"
+
+    PaginatedFunctions:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Function"
+        pagination:
+          $ref: "#/components/schemas/OffsetPagination"
+
+    PaginatedDeployments:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Deployment"
+        pagination:
+          $ref: "#/components/schemas/OffsetPagination"
+
+    PaginatedModels:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Model"
+        pagination:
+          $ref: "#/components/schemas/OffsetPagination"
+
+    PaginatedModelVersions:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelVersion"
+        pagination:
+          $ref: "#/components/schemas/OffsetPagination"
+
+    PaginatedInvocations:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Invocation"
+        pagination:
+          $ref: "#/components/schemas/CursorPagination"
+
+    PaginatedUsageEvents:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsageEvent"
+        pagination:
+          $ref: "#/components/schemas/CursorPagination"
+
+    PaginatedSecrets:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Secret"
+        pagination:
+          $ref: "#/components/schemas/OffsetPagination"
+
+    PaginatedInstances:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Instance"
+        pagination:
+          $ref: "#/components/schemas/OffsetPagination"
+
+    PaginatedNotificationChannels:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/NotificationChannel"
+        pagination:
+          $ref: "#/components/schemas/OffsetPagination"
+
+    PaginatedWebhooks:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Webhook"
+        pagination:
+          $ref: "#/components/schemas/OffsetPagination"
+
+    # ── Error ────────────────────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code
+              example: "function_not_found"
+            message:
+              type: string
+              description: Human-readable error description
+              example: "Function 'embed-text' does not exist."
+            request_id:
+              type: string
+              format: uuid
+              description: UUID v7 — include in support requests
+
+  # ── Reusable Responses ──────────────────────────────────────────────────────
+
+  responses:
+    BadRequest:
+      description: Bad request — malformed JSON or invalid parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: bad_request
+              message: "Invalid request body."
+              request_id: "01hw3abc-0000-7000-0000-000000000001"
+
+    Unauthorized:
+      description: Missing or invalid authentication credentials
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: unauthorized
+              message: "Authentication required."
+              request_id: "01hw3abc-0000-7000-0000-000000000002"
+
+    PaymentRequired:
+      description: Insufficient credits to complete the request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: insufficient_credits
+              message: "Your credit balance is too low. Please top up to continue."
+              request_id: "01hw3abc-0000-7000-0000-000000000003"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: not_found
+              message: "Resource does not exist."
+              request_id: "01hw3abc-0000-7000-0000-000000000004"
+
+    Conflict:
+      description: Conflict with current resource state
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: conflict
+              message: "A resource with this name already exists."
+              request_id: "01hw3abc-0000-7000-0000-000000000005"
+
+    UnprocessableEntity:
+      description: Validation error — request body is syntactically valid but semantically incorrect
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: validation_error
+              message: "name: must match pattern '^[a-z0-9][a-z0-9-]{0,98}[a-z0-9]$'"
+              request_id: "01hw3abc-0000-7000-0000-000000000006"
+
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        X-RateLimit-Limit:
+          $ref: "#/components/headers/X-RateLimit-Limit"
+        X-RateLimit-Remaining:
+          $ref: "#/components/headers/X-RateLimit-Remaining"
+        X-RateLimit-Reset:
+          $ref: "#/components/headers/X-RateLimit-Reset"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: rate_limit_exceeded
+              message: "Rate limit exceeded. Retry after X-RateLimit-Reset."
+              request_id: "01hw3abc-0000-7000-0000-000000000007"
+
+    Timeout:
+      description: Function execution timed out
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: function_timeout
+              message: "Function exceeded the maximum execution time."
+              request_id: "01hw3abc-0000-7000-0000-000000000008"
+
+    FunctionError:
+      description: Function returned an unhandled exception
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: function_error
+              message: "Function raised an unhandled exception."
+              request_id: "01hw3abc-0000-7000-0000-000000000009"
+
+    ServiceUnavailable:
+      description: No GPU instances available — all providers at capacity
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: no_capacity
+              message: "No GPU capacity available. Please retry shortly."
+              request_id: "01hw3abc-0000-7000-0000-000000000010"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WEBHOOK PAYLOADS (informational — not part of the request/response cycle)
+# These schemas describe the POST body Zylora sends to user webhook endpoints.
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-webhook-payloads:
+  description: |
+    All webhook deliveries share this envelope:
+    ```json
+    {
+      "event": "deployment.active",
+      "timestamp": "2026-04-10T14:30:00Z",
+      "delivery_id": "01hw3abc-...",
+      "data": { ... event-specific payload ... }
+    }
+    ```
+    Verify authenticity by checking `X-Zylora-Signature`:
+    ```
+    HMAC-SHA256(secret, raw_request_body) == X-Zylora-Signature
+    ```
+  schemas:
+    deployment.queued: &deployment_event
+      event:
+        type: string
+        example: "deployment.queued"
+      timestamp:
+        type: string
+        format: date-time
+      delivery_id:
+        type: string
+        format: uuid
+      data:
+        $ref: "#/components/schemas/Deployment"
+    deployment.building: *deployment_event
+    deployment.active: *deployment_event
+    deployment.failed: *deployment_event
+    invocation.completed:
+      event:
+        type: string
+        example: "invocation.completed"
+      timestamp:
+        type: string
+        format: date-time
+      delivery_id:
+        type: string
+        format: uuid
+      data:
+        $ref: "#/components/schemas/Invocation"
+    credits.low:
+      event:
+        type: string
+        example: "credits.low"
+      timestamp:
+        type: string
+        format: date-time
+      delivery_id:
+        type: string
+        format: uuid
+      data:
+        balance_cents:
+          type: integer
+          format: int64
+        threshold_cents:
+          type: integer
+          format: int64

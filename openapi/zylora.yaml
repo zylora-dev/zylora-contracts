@@ -1649,6 +1649,139 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  # ── Dashboard ───────────────────────────────────────────────────────────────
+
+  /v1/dashboard/overview:
+    get:
+      operationId: getDashboardOverview
+      summary: Dashboard overview stats
+      description: Aggregated snapshot for the dashboard overview page — RPM, latency, GPU util, errors, active instances, MTD spend.
+      tags: [Monitoring]
+      responses:
+        "200":
+          description: Aggregated overview stats
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardOverview"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/dashboard/activity:
+    get:
+      operationId: getDashboardActivity
+      summary: Recent activity feed
+      description: Returns the most recent workspace events (deployments, scaling, errors, billing).
+      tags: [Monitoring]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: Activity feed
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ActivityEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/monitoring/gpu-utilization:
+    get:
+      operationId: getGpuUtilization
+      summary: GPU utilization time-series
+      description: Returns GPU utilization percentage by GPU type over time.
+      tags: [Monitoring]
+      parameters:
+        - name: period
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [1h, 6h, 24h, 7d]
+          description: Time window
+        - name: gpu_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/GpuTypeEnum"
+          description: Filter to a specific GPU type
+      responses:
+        "200":
+          description: GPU utilization data points
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GpuUtilizationTimeSeries"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/billing/daily-spend:
+    get:
+      operationId: getDailySpend
+      summary: Daily spend breakdown
+      description: Returns daily spending broken down by category (compute, storage, network) for a given period.
+      tags: [Billing]
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+            default: 7
+          description: Number of days to look back
+      responses:
+        "200":
+          description: Daily spend data
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailySpendResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/billing/spend-by-function:
+    get:
+      operationId: getSpendByFunction
+      summary: Spend breakdown by function
+      description: Returns cost allocation per function for the current billing cycle.
+      tags: [Billing]
+      responses:
+        "200":
+          description: Spend by function
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpendByFunctionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   # ── Notifications ────────────────────────────────────────────────────────────
 
   /v1/notifications/channels:
@@ -3332,6 +3465,134 @@ components:
         timestamp:
           type: string
           format: date-time
+
+    # ── Dashboard & Analytics ─────────────────────────────────────────────────
+
+    DashboardOverview:
+      type: object
+      required: [rpm, p99_latency_ms, gpu_utilization_pct, cold_starts, error_rate_pct, active_instances, mtd_spend_cents, active_functions]
+      properties:
+        rpm:
+          type: number
+          description: Current requests per minute across all functions
+        p99_latency_ms:
+          type: integer
+          description: P99 latency in milliseconds
+        gpu_utilization_pct:
+          type: number
+          description: Average GPU utilization percentage
+        cold_starts:
+          type: integer
+          description: Number of cold starts in the last hour
+        error_rate_pct:
+          type: number
+          description: Error rate percentage over the last hour
+        active_instances:
+          type: integer
+          description: Currently running GPU instances
+        active_functions:
+          type: integer
+          description: Functions with at least one active deployment
+        mtd_spend_cents:
+          type: integer
+          format: int64
+          description: Month-to-date spend in cents
+        rpm_delta_pct:
+          type: number
+          description: RPM change vs previous day (percentage)
+        latency_delta_ms:
+          type: integer
+          description: P99 latency change vs previous day
+        gpu_delta_pct:
+          type: number
+          description: GPU utilization change vs previous day
+
+    ActivityEvent:
+      type: object
+      required: [id, type, message, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [deploy, error, scale, billing, info]
+        message:
+          type: string
+        function_name:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+
+    GpuUtilizationTimeSeries:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            required: [timestamp, gpu_type, utilization_pct]
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              gpu_type:
+                $ref: "#/components/schemas/GpuTypeEnum"
+              utilization_pct:
+                type: number
+
+    DailySpendResponse:
+      type: object
+      required: [data, total_cents]
+      properties:
+        total_cents:
+          type: integer
+          format: int64
+          description: Total spend for the period in cents
+        data:
+          type: array
+          items:
+            type: object
+            required: [date, compute_cents, storage_cents, network_cents]
+            properties:
+              date:
+                type: string
+                format: date
+              compute_cents:
+                type: integer
+                format: int64
+              storage_cents:
+                type: integer
+                format: int64
+              network_cents:
+                type: integer
+                format: int64
+
+    SpendByFunctionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            required: [function_id, function_name, gpu_hours, cost_cents, pct]
+            properties:
+              function_id:
+                type: string
+                format: uuid
+              function_name:
+                type: string
+              gpu_hours:
+                type: number
+              cost_cents:
+                type: integer
+                format: int64
+              pct:
+                type: number
+                description: Percentage of total spend
 
     # ── Pagination Wrappers ───────────────────────────────────────────────────
 

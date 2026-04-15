@@ -2090,6 +2090,54 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  # ── Startup Credits ──────────────────────────────────────────────────────────
+
+  /v1/startups/apply:
+    post:
+      operationId: applyStartupCredits
+      summary: Apply for startup credits
+      description: |
+        Submit a startup credit application. One application per user.
+        Explorer tier is auto-approved; others require manual review.
+      tags: [Startups]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartupApplicationRequest"
+      responses:
+        "200":
+          description: Application submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartupApplication"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/startups/application:
+    get:
+      operationId: getStartupApplication
+      summary: Get current startup application
+      description: Returns the current user's startup credit application status, if any.
+      tags: [Startups]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Application details or null
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartupApplication"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPONENTS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3593,6 +3641,70 @@ components:
               pct:
                 type: number
                 description: Percentage of total spend
+
+    # ── Startup Schemas ──────────────────────────────────────────────────────
+
+    StartupApplicationRequest:
+      type: object
+      required: [tier]
+      properties:
+        tier:
+          type: string
+          enum: [explorer, builder, startup, accelerator]
+        company_name:
+          type: string
+        company_url:
+          type: string
+        github_url:
+          type: string
+        linkedin_url:
+          type: string
+        funding_stage:
+          type: string
+        use_case:
+          type: string
+
+    StartupApplication:
+      type: object
+      required: [id, tier, status, credits_granted_cents, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tier:
+          type: string
+          enum: [explorer, builder, startup, accelerator]
+        status:
+          type: string
+          enum: [pending, approved, rejected, expired]
+        company_name:
+          type: string
+          nullable: true
+        company_url:
+          type: string
+          nullable: true
+        github_url:
+          type: string
+          nullable: true
+        linkedin_url:
+          type: string
+          nullable: true
+        funding_stage:
+          type: string
+          nullable: true
+        use_case:
+          type: string
+          nullable: true
+        credits_granted_cents:
+          type: integer
+          format: int64
+        credits_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
 
     # ── Pagination Wrappers ───────────────────────────────────────────────────
 

@@ -198,7 +198,7 @@
         "b200",
         "mi300x"
       ],
-      "description": "GPU instance type. See https://zylora.dev/docs/gpu-types for pricing."
+      "description": "GPU instance type. See https://docs.zylora.dev/gpu-types for pricing."
     },
     "Runtime": {
       "type": "string",

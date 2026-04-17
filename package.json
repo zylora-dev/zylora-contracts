@@ -4,9 +4,9 @@
   "description": "Zylora API contracts — OpenAPI spec, JSON schemas, and generated client types",
   "private": true,
   "scripts": {
-    "generate": "pnpm generate:ts && pnpm generate:python",
-    "generate:ts": "openapi-typescript openapi/zylora.yaml -o ../apps/dashboard/src/lib/api/schema.ts",
-    "generate:ts:sdk": "openapi-typescript openapi/zylora.yaml -o ../sdks/typescript/src/generated/schema.ts",
+    "generate": "pnpm generate:ts && pnpm generate:ts:sdk && pnpm generate:python",
+    "generate:ts": "openapi-typescript openapi/zylora.yaml -o ../apps/dashboard/src/lib/api/schema.d.ts",
+    "generate:ts:sdk": "openapi-typescript openapi/zylora.yaml -o ../sdks/typescript/src/generated/schema.d.ts",
     "generate:python": "openapi-python-client generate --path openapi/zylora.yaml --output ../sdks/python/src/zylora/_generated/ --overwrite",
     "lint": "redocly lint openapi/zylora.yaml",
     "preview": "redocly preview-docs openapi/zylora.yaml",

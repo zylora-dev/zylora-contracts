@@ -132,6 +132,73 @@ paths:
               schema:
                 $ref: "#/components/schemas/ReadinessResponse"
 
+  # ── Public Function Domain ────────────────────────────────────────────────
+
+  /{slug}:
+    post:
+      operationId: invokeFunctionBySlug
+      summary: Invoke function by slug
+      description: |
+        Invokes a function on the function domain endpoint `https://fn.zylora.dev/{slug}`.
+        This mirrors synchronous invocation, but resolves the function by its slug instead
+        of UUID.
+      tags: [Functions]
+      servers:
+        - url: https://fn.zylora.dev
+          description: Production function domain
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Function slug shown in the public endpoint URL
+      requestBody:
+        required: true
+        description: Arbitrary JSON payload passed to the function handler
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Function result
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+            X-Invocation-Id:
+              $ref: "#/components/headers/X-Invocation-Id"
+            X-Duration-Ms:
+              $ref: "#/components/headers/X-Duration-Ms"
+            X-Cold-Start:
+              $ref: "#/components/headers/X-Cold-Start"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "408":
+          $ref: "#/components/responses/Timeout"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/FunctionError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   # ── GPU Types ───────────────────────────────────────────────────────────────
 
   /v1/gpus:
@@ -172,6 +239,40 @@ paths:
                     available: true
 
   # ── Auth ────────────────────────────────────────────────────────────────────
+
+  /v1/auth/me:
+    get:
+      operationId: getAuthenticatedUser
+      summary: Get authenticated user
+      description: Returns the authenticated user profile used by the CLI and dashboard shell.
+      tags: [Auth]
+      responses:
+        "200":
+          description: Authenticated user profile
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WhoamiResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/auth/webhooks/clerk:
+    post:
+      operationId: receiveClerkWebhook
+      summary: Receive Clerk webhook
+      description: Public Clerk webhook endpoint secured by Svix signature verification.
+      tags: [Auth]
+      security: []
+      responses:
+        "200":
+          description: Webhook accepted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
 
   /v1/auth/api-keys:
     post:
@@ -1508,6 +1609,28 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /v1/billing/webhooks/{provider}:
+    post:
+      operationId: receiveBillingWebhook
+      summary: Receive billing provider webhook
+      description: Public payment webhook endpoint used by Dodo and future payment providers.
+      tags: [Billing]
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [dodo, stripe]
+      responses:
+        "200":
+          description: Webhook accepted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   # ── Secrets ─────────────────────────────────────────────────────────────────
 
   /v1/secrets:
@@ -1732,6 +1855,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GpuUtilizationTimeSeries"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/monitoring/capacity-health:
+    get:
+      operationId: getCapacityHealth
+      summary: Warm capacity health
+      description: Returns desired versus available reusable warm capacity per function.
+      tags: [Monitoring]
+      responses:
+        "200":
+          description: Warm capacity health snapshot
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CapacityHealthPoint"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -3174,7 +3322,9 @@ components:
         event_type:
           $ref: "#/components/schemas/UsageEventTypeEnum"
         gpu_type:
-          $ref: "#/components/schemas/GpuTypeEnum"
+          anyOf:
+            - $ref: "#/components/schemas/GpuTypeEnum"
+            - type: "null"
         quantity:
           type: number
           description: Quantity consumed (GPU-seconds, GB, minutes, etc.)
@@ -3226,6 +3376,43 @@ components:
           type: integer
           format: int64
           description: Monthly credits included with this plan
+
+    WhoamiResponse:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+        plan:
+          type: [string, "null"]
+        org:
+          type: [string, "null"]
+
+    CapacityHealthPoint:
+      type: object
+      required:
+        - function_id
+        - slug
+        - gpu_type
+        - desired_warm_instances
+        - current_reusable_instances
+        - status
+      properties:
+        function_id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        gpu_type:
+          $ref: "#/components/schemas/GpuTypeEnum"
+        desired_warm_instances:
+          type: integer
+        current_reusable_instances:
+          type: integer
+        status:
+          type: string
+          enum: [healthy, degraded]
 
     Secret:
       type: object
@@ -3678,30 +3865,23 @@ components:
           type: string
           enum: [pending, approved, rejected, expired]
         company_name:
-          type: string
-          nullable: true
+          type: [string, "null"]
         company_url:
-          type: string
-          nullable: true
+          type: [string, "null"]
         github_url:
-          type: string
-          nullable: true
+          type: [string, "null"]
         linkedin_url:
-          type: string
-          nullable: true
+          type: [string, "null"]
         funding_stage:
-          type: string
-          nullable: true
+          type: [string, "null"]
         use_case:
-          type: string
-          nullable: true
+          type: [string, "null"]
         credits_granted_cents:
           type: integer
           format: int64
         credits_expires_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
         created_at:
           type: string
           format: date-time
